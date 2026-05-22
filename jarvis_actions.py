@@ -492,7 +492,10 @@ class FileHandler:
         low = phrase.lower()
         os.makedirs(self._NOTES_DIR, exist_ok=True)
 
-        if any(w in low for w in ("crée", "nouvelle", "écris", "prends note")):
+        if any(w in low for w in ("crée", "nouvelle", "écris", "prends note", "prend note",
+                                  "prends une note", "prend une note", "prendre note", "prendre une note")):
+            return self._create_note(phrase)
+        if any(w in low for w in ("note", "notre", "noter")) and any(w in low for w in ("prend", "prends", "prendre", "crée", "créer", "ecris", "écris", "enregistre")):
             return self._create_note(phrase)
         if any(w in low for w in ("lis", "affiche", "montre")):
             return self._read_last_note()
@@ -502,8 +505,12 @@ class FileHandler:
 
     def _create_note(self, phrase: str) -> str:
         content = SystemUtils.extract_after(
-            phrase, "crée une note", "nouvelle note", "écris une note",
-            "prends note", "note rapide", "note :",
+            phrase,
+            "crée une note", "crée note", "créer une note", "créer note",
+            "creer une note", "creer note", "nouvelle note", "écris une note",
+            "écrire une note", "prends note", "prend note", "prends une note",
+            "prend une note", "prendre note", "prendre une note",
+            "note rapide", "note :", "notre",
         )
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         path = os.path.join(self._NOTES_DIR, f"note_{ts}.txt")
@@ -712,6 +719,25 @@ class ShutdownHandler:
 
         return self.EXIT_SIGNAL
 
+class PresentationHandler:
+    _REPLIES = [
+        "Enchanté, {name}. Je suis là pour vous aider.",
+        "Ravi de faire votre connaissance, {name}.",
+        "Bonjour {name}. Je retiens votre nom.",
+    ]
+
+    def handle(self, phrase: str) -> str:
+        name = SystemUtils.extract_after(
+            phrase,
+            "je m'appelle", "je m appelle", "je m'appel",
+            "mon nom est", "je suis", "moi c'est", "moi c est",
+        )
+        if not name:
+            return random.choice([
+                "Enchanté. Je suis Jarvis.",
+                "Ravi de faire votre connaissance.",
+            ])
+        return random.choice(self._REPLIES).format(name=name)
 
 class UnknownHandler:
     _REPLIES = [
@@ -744,6 +770,7 @@ class ActionDispatcher:
             "blague":        JokeHandler(),
             "meteo":         WeatherHandler(),
             "calcul":        CalculatorHandler(),
+            "presentation":  PresentationHandler(),
             "arret":         ShutdownHandler(),
             "inconnu":       UnknownHandler(),
         }

@@ -103,14 +103,22 @@ INTENTS: dict = {
         {
             "tag": "fichiers",
             "patterns": [
-                "crée une note", "nouvelle note", "crée un fichier",
-                "écris une note", "note rapide", "prends note",
-                "lis la note", "affiche la note", "montre la note",
-                "ouvre le fichier", "liste le dossier", "liste les fichiers",
-                "affiche le dossier", "contenu du dossier",
+                "crée une note", "crée note", "créé une note", "créer une note",
+                "nouvelle note", "écris une note", "écrire une note", "note rapide",
+                "prends note", "prend note", "prends une note", "prend une note",
+                "prendre note", "prendre une note", "note :", "note",
+                "crée un fichier", "ouvre le fichier", "liste le dossier",
+                "liste les fichiers", "affiche le dossier", "contenu du dossier",
                 "supprime le fichier", "efface le fichier",
                 "renomme le fichier", "déplace le fichier",
                 "crée un dossier", "nouveau dossier",
+            ],
+        },
+        {
+            "tag": "presentation",
+            "patterns": [
+                "je m'appelle", "je m appelle", "je m'appel", "mon nom est",
+                "je suis", "moi c'est", "moi c est",
             ],
         },
         {
