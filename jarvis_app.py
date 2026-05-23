@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -19,12 +20,6 @@ try:
     _SR = True
 except ImportError:
     _SR = False
-
-try:
-    import pyttsx3
-    _TTS = True
-except ImportError:
-    _TTS = False
 
 WAKE_TRIGGERS = ("jarvis", "jarvi", "jarvy", "jarv", "davis", "garvis", "jarwiss", "arvis", "jar", "jor", "javis")
 
@@ -51,48 +46,41 @@ class TTSEngine:
         self._pending = 0
         self._idle = threading.Event()
         self._idle.set()
-        if _TTS:
-            threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._worker, daemon=True).start()
 
-    _VOICE_ID = r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0"
+    _VOICE = "Microsoft Zira Desktop"
 
-    def _new_engine(self):
-        engine = pyttsx3.init()
-        engine.setProperty("voice", self._VOICE_ID)
-        engine.setProperty("rate", 175)
-        engine.setProperty("volume", 1.0)
-        return engine
+    @staticmethod
+    def _speak(text: str) -> None:
+        safe = text.replace("'", " ").replace('"', " ")
+        cmd = (
+            "Add-Type -AssemblyName System.Speech;"
+            "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+            "$s.Rate=2;"
+            f"try{{$s.SelectVoice('{TTSEngine._VOICE}')}}catch{{}};"
+            f"$s.Speak('{safe}')"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            capture_output=True, timeout=30,
+        )
 
     def _worker(self) -> None:
-        ctypes.windll.ole32.CoInitialize(None)
-        engine = self._new_engine()
         while True:
             item = self._q.get()
             if item is None:
                 break
             try:
-                engine.say(item)
-                engine.runAndWait()
+                self._speak(item)
             except Exception as exc:
-                print(f"[TTS] Error: {exc} — reinit")
-                try:
-                    engine.stop()
-                except Exception:
-                    pass
-                try:
-                    engine = self._new_engine()
-                except Exception as e:
-                    print(f"[TTS] Reinit failed: {e}")
+                print(f"[TTS] Error: {exc}")
             finally:
                 with self._lock:
                     self._pending -= 1
                     if self._pending == 0:
                         self._idle.set()
-        ctypes.windll.ole32.CoUninitialize()
 
     def speak(self, text: str) -> None:
-        if not _TTS:
-            return
         with self._lock:
             self._pending += 1
             self._idle.clear()

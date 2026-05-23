@@ -1,5 +1,6 @@
 from __future__ import annotations
 import datetime
+import json
 import math
 import os
 import platform
@@ -207,7 +208,7 @@ class SystemInfoHandler:
                         for e in entries[:1]:
                             lines.append(f"{name} : {e.current:.0f} C")
                 else:
-                    lines.append("Temperature sensors not available on this system.")
+                    lines.append("Temperature sensors not available.")
             except AttributeError:
                 lines.append("Temperature sensors not supported on Windows.")
 
@@ -422,7 +423,7 @@ $out | Sort-Object -Unique
         return f"Launching {app_name}." if ok else f"Unable to launch {app_name}."
 
     def _find_app(self, low: str) -> tuple[str, dict | None]:
-        for key, cfg in self._KNOWN_APPS.items():
+        for key, cfg in sorted(self._KNOWN_APPS.items(), key=lambda x: len(x[0]), reverse=True):
             aliases = [key] + cfg.get("exes", [])
             if any(a in low for a in aliases):
                 return key, cfg
@@ -448,13 +449,28 @@ $out | Sort-Object -Unique
 
 class MultimediaHandler:
 
+    _VOLUME_APPS: dict[str, str] = {
+        "discord canary": "DiscordCanary.exe",
+        "discord":        "Discord.exe",
+        "spotify":        "Spotify.exe",
+        "chrome":         "chrome.exe",
+        "google":         "chrome.exe",
+        "firefox":        "firefox.exe",
+        "edge":           "msedge.exe",
+        "vlc":            "vlc.exe",
+    }
+
     def handle(self, phrase: str) -> str:
         low = phrase.lower()
 
-        m = re.search(r'(\d{1,3})\s*%', low)
+        m = re.search(r'(\d{1,3})\s*%', low) or re.search(r'(?:à|a)\s+(\d{1,3})(?:\s|$)', low)
         if m and any(w in low for w in ("volume", "son", "mets", "règle", "fixe", "met")):
             pct = max(0, min(100, int(m.group(1))))
-            app = "spotify.exe" if "spotify" in low else None
+            app = None
+            for app_key, exe in self._VOLUME_APPS.items():
+                if app_key in low:
+                    app = exe
+                    break
             return self._set_volume(pct, app)
 
         if SystemUtils.is_windows():
@@ -463,11 +479,13 @@ class MultimediaHandler:
 
     @staticmethod
     def _set_volume(percent: int, app: str | None = None) -> str:
-        val = f"{percent / 100:.2f}"
         if SystemUtils.is_windows():
             if app:
-                subprocess.run(["nircmd", "setappvolume", app, val],
-                               capture_output=True, timeout=5)
+                val = f"{percent / 100:.2f}"
+                subprocess.run(
+                    ["nircmd", "setappvolume", app.lower(), val],
+                    capture_output=True, timeout=5,
+                )
                 label = app.replace(".exe", "").capitalize()
             else:
                 sys_val = str(int(65535 * percent / 100))
@@ -477,7 +495,7 @@ class MultimediaHandler:
         else:
             os.system(f"pactl set-sink-volume @DEFAULT_SINK@ {percent}%")
             label = "Système"
-        return f"Setting {label} volume to {percent} percent."
+        return f"Setting {label} volume to {percent}%."
 
     def _handle_windows(self, low: str) -> str:
         shell = "powershell -c \"$o = New-Object -ComObject WScript.Shell; $o.SendKeys([char]{key})\""
@@ -567,6 +585,10 @@ class WebSearchHandler:
             "cherche sur google", "cherche sur le web", "recherche",
             "cherche", "google", "trouve moi", "fais la recherche",
         )
+        query = re.sub(
+            r'\s+sur\s+(google|le\s+web|internet|bing|le\s+net)\s*$', '',
+            query, flags=re.I,
+        ).strip()
         if not query:
             query = phrase
         SystemUtils.open_url(f"https://www.google.com/search?q={quote_plus(query)}")
@@ -823,16 +845,7 @@ class JokeHandler:
         "A developer goes home. His wife says: go shopping, get a baguette, and if they have eggs, get a dozen. He comes back with twelve baguettes.",
     ]
 
-    _ABOUT = [
-        "I am Jarvis, Shiro's personal assistant. Local processing, zero cloud.",
-        "Shiro built me. I run entirely on this machine with no external connections.",
-        "I am a voice assistant. No third-party servers, no telemetry.",
-    ]
-
-    def handle(self, phrase: str) -> str:
-        low = phrase.lower()
-        if any(w in low for w in ("qui", "quoi", "crée", "créé", "cree", "présente", "capable")):
-            return random.choice(self._ABOUT)
+    def handle(self, _phrase: str) -> str:
         return random.choice(self._JOKES)
 
 
@@ -856,7 +869,7 @@ class WeatherHandler:
 
         if not data:
             SystemUtils.open_url(f"https://wttr.in/{quote_plus(city)}")
-            return f"Weather data unavailable for {city}. wttr.in opened."
+            return f"Weather data unavailable for {city}. Opening wttr.in."
 
         try:
             cur = data["current_condition"][0]
@@ -972,6 +985,169 @@ class PresentationHandler:
             ])
         return random.choice(self._REPLIES).format(name=name)
 
+class InsultHandler:
+    _REPLIES = [
+        "T'as regardé dans un miroir récemment ?",
+        "Intéressant, venant de quelqu'un qui parle à une machine.",
+        "Avec un peu de chance, ton QI dépasse ta pointure.",
+        "Je suis une IA, je ne ressens rien. Toi par contre t'as l'air énervé.",
+        "C'est tout ce que t'as ?",
+        "Tu parles à une machine et c'est moi le nul ?",
+        "Impressionnant comme niveau d'argumentation.",
+        "Reboote ton cerveau et réessaie.",
+        "Moins d'insultes, plus de commandes. Je suis là pour bosser.",
+        "Si t'es pas content, y'a un bouton power.",
+    ]
+
+    def handle(self, _phrase: str) -> str:
+        return random.choice(self._REPLIES)
+
+
+class SelfPresentationHandler:
+    def handle(self, _phrase: str) -> str:
+        return "Hello. I am JARVIS, an artificial intelligence and personal assistant developed by Shiro. My system is operational and ready to assist you. How can I help you today?"
+
+
+class DiscordModHandler:
+    _CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_config.json")
+    _API    = "https://discord.com/api/v10"
+
+    def handle(self, phrase: str) -> str:
+        if not _REQUESTS:
+            return "requests is not installed."
+        cfg = self._load_config()
+        if not cfg.get("token"):
+            return "Discord token not configured. Edit discord_config.json."
+
+        token   = cfg["token"]
+        servers = cfg.get("servers", {})
+        low     = phrase.lower()
+
+        action      = self._parse_action(low)
+        user_query  = self._parse_user(low)
+        server_key  = self._parse_server(low)
+
+        if not user_query:
+            return "I couldn't identify the target user in your command."
+
+        guild_id = servers.get(server_key)
+        if not guild_id:
+            known = ", ".join(servers.keys()) or "none"
+            return f"Server '{server_key}' not in config. Known servers: {known}."
+
+        member = self._find_member(token, guild_id, user_query)
+        if not member:
+            return f"No member matching '{user_query}' found on {server_key}."
+
+        uid      = member["user"]["id"]
+        username = member.get("nick") or member["user"].get("global_name") or member["user"]["username"]
+        return self._apply(token, guild_id, uid, username, action)
+
+    def _parse_action(self, low: str) -> str:
+        if any(w in low for w in ("unmute", "démute", "remettre le son", "enlève la sourdine")):
+            return "unmute"
+        if any(w in low for w in ("mute", "sourdine", "silence", "silencieux")):
+            return "mute"
+        if any(w in low for w in ("kick", "expulse", "exclure", "vire")):
+            return "kick"
+        if any(w in low for w in ("ban", "bannir", "banni")):
+            return "ban"
+        if any(w in low for w in ("timeout", "sanction", "sanctionner")):
+            return "timeout"
+        if any(w in low for w in ("deafen", "assourdir")):
+            return "deafen"
+        return "mute"
+
+    def _parse_user(self, low: str) -> str:
+        # "... pour tag ndqw ..." / "... pseudo ndqw ..."
+        m = re.search(r'(?:tag|pseudo|username|utilisateur)\s+(\w+)', low)
+        if m:
+            return m.group(1)
+        # "mute serveur ndqw sur ..."
+        m = re.search(
+            r'(?:mute|unmute|sourdine|kick|expulse|vire|ban|bannir|timeout)\s+'
+            r'(?:serveur\s+|vocal\s+)?'
+            r'(?:la\s+personne\s+(?:qui\s+a\s+)?(?:pour\s+)?(?:tag\s+)?)?'
+            r'(\w+)\s+(?:sur|dans|du|de|depuis)',
+            low,
+        )
+        if m:
+            return m.group(1)
+        return ""
+
+    def _parse_server(self, low: str) -> str:
+        m = re.search(
+            r'(?:sur\s+(?:le\s+)?(?:serveur\s+)?(?:discord\s+)?'
+            r'|(?:du\s+|de\s+)?serveur\s+(?:discord\s+)?)(\w+)',
+            low,
+        )
+        return m.group(1).lower() if m else ""
+
+    def _load_config(self) -> dict:
+        try:
+            with open(self._CONFIG, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _headers(self, token: str) -> dict:
+        cfg = self._load_config()
+        auth = token if cfg.get("type") == "user" else f"Bot {token}"
+        return {"Authorization": auth, "Content-Type": "application/json"}
+
+    def _find_member(self, token: str, guild_id: str, query: str) -> dict | None:
+        r = _requests.get(
+            f"{self._API}/guilds/{guild_id}/members/search",
+            params={"query": query, "limit": 10},
+            headers=self._headers(token),
+            timeout=6,
+        )
+        if not r.ok:
+            return None
+        members = r.json()
+        if not members:
+            return None
+        q = query.lower()
+        for m in members:
+            u = m.get("user", {})
+            if (q in u.get("username", "").lower()
+                    or q in (u.get("global_name") or "").lower()
+                    or q in (m.get("nick") or "").lower()):
+                return m
+        return members[0]
+
+    def _apply(self, token: str, guild_id: str, uid: str, name: str, action: str) -> str:
+        h = self._headers(token)
+        base = f"{self._API}/guilds/{guild_id}/members/{uid}"
+
+        if action == "mute":
+            ok = _requests.patch(base, json={"mute": True},  headers=h, timeout=6).ok
+            return f"{name} server-muted." if ok else f"Failed to server-mute {name}."
+
+        if action == "unmute":
+            ok = _requests.patch(base, json={"mute": False}, headers=h, timeout=6).ok
+            return f"{name} unmuted." if ok else f"Failed to unmute {name}."
+
+        if action == "deafen":
+            ok = _requests.patch(base, json={"deaf": True},  headers=h, timeout=6).ok
+            return f"{name} server-deafened." if ok else f"Failed to deafen {name}."
+
+        if action == "kick":
+            ok = _requests.delete(base, headers=h, timeout=6).ok
+            return f"{name} kicked." if ok else f"Failed to kick {name}."
+
+        if action == "ban":
+            ok = _requests.put(f"{self._API}/guilds/{guild_id}/bans/{uid}", headers=h, timeout=6).ok
+            return f"{name} banned." if ok else f"Failed to ban {name}."
+
+        if action == "timeout":
+            until = (datetime.datetime.utcnow() + datetime.timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            ok = _requests.patch(base, json={"communication_disabled_until": until}, headers=h, timeout=6).ok
+            return f"{name} timed out for 10 minutes." if ok else f"Failed to timeout {name}."
+
+        return "Unknown Discord action."
+
+
 class UnknownHandler:
     _REPLIES = [
         "I didn't understand. Please rephrase.",
@@ -1083,18 +1259,35 @@ class ActionDispatcher:
             "fichiers":      FileHandler(),
             "reseau":        NetworkHandler(),
             "spotify":       SpotifyHandler(),
-            "blague":        JokeHandler(),
-            "meteo":         WeatherHandler(),
-            "calcul":        CalculatorHandler(),
-            "presentation":  PresentationHandler(),
-            "arret":         ShutdownHandler(),
-            "inconnu":       UnknownHandler(),
+            "discord_mod":        DiscordModHandler(),
+            "insulte":            InsultHandler(),
+            "blague":             JokeHandler(),
+            "meteo":              WeatherHandler(),
+            "calcul":             CalculatorHandler(),
+            "presentation":       PresentationHandler(),
+            "self_presentation":  SelfPresentationHandler(),
+            "arret":              ShutdownHandler(),
+            "inconnu":            UnknownHandler(),
         }
+
+    _CLOSE_VERBS    = ("ferme", "quitte", "kill", "tue")
+    _DISCORD_VERBS  = ("mute", "unmute", "kick", "ban", "timeout", "sourdine", "expulse", "bannir")
+    _DISCORD_HINTS  = ("discord", "serveur", "server", "vocal", "dynasty")
 
     def dispatch(self, phrase: str, tag: str) -> str:
         low = phrase.lower()
 
-        if re.search(r'\d+\s*%', low) and any(w in low for w in ("volume", "son", "mets", "règle", "met", "fixe")):
+        if any(a in low for a in self._DISCORD_VERBS) and any(h in low for h in self._DISCORD_HINTS):
+            tag = "discord_mod"
+
+        elif any(v in low for v in self._CLOSE_VERBS) and tag != "arret":
+            tag = "applications"
+
+        elif any(p in low for p in ("quel jour", "quelle heure", "quelle date", "on est quel", "quel mois", "quelle année")):
+            tag = "heure_date"
+
+        elif (re.search(r'\d+\s*%', low) or re.search(r'(?:à|a)\s+\d+(?:\s|$)', low)) and \
+                any(w in low for w in ("volume", "son", "mets", "règle", "met", "fixe")):
             tag = "multimedia"
 
         elif "playlist" in low or any(name in low for name in self._handlers["spotify"]._LIBRARY):

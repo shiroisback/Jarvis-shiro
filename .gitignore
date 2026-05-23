@@ -2,3 +2,4 @@ __pycache__/
 jarvis_brain.cache
 *.cache
 .env
+discord_config.json
