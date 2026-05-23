@@ -3,3 +3,4 @@ jarvis_brain.cache
 *.cache
 .env
 discord_config.json
+get_role_members.js

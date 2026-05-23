@@ -148,7 +148,7 @@ INTENTS: dict = {
                 "mute la personne sur discord", "mute le tag", "mute le pseudo",
                 "réduis au silence sur discord", "silence sur discord",
                 "unmute sur discord", "unmute discord", "enlève la sourdine discord",
-                "kick sur discord", "expulse du serveur", "vire du serveur discord",
+                "kik sur discord", "expulse du serveur", "vire du serveur discord",
                 "ban sur discord", "bannir du serveur", "bannir discord",
                 "timeout sur discord", "sanctionner discord", "sanction discord",
                 "assourdir discord", "deafen discord",

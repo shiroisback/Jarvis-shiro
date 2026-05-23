@@ -1009,8 +1009,9 @@ class SelfPresentationHandler:
 
 
 class DiscordModHandler:
-    _CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_config.json")
-    _API    = "https://discord.com/api/v10"
+    _CONFIG        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_config.json")
+    _API           = "https://discord.com/api/v10"
+    _voice_history: dict[str, str] = {} 
 
     def handle(self, phrase: str) -> str:
         if not _REQUESTS:
@@ -1021,19 +1022,32 @@ class DiscordModHandler:
 
         token   = cfg["token"]
         servers = cfg.get("servers", {})
+        aliases = cfg.get("aliases", {})
         low     = phrase.lower()
 
-        action      = self._parse_action(low)
-        user_query  = self._parse_user(low)
-        server_key  = self._parse_server(low)
-
-        if not user_query:
-            return "I couldn't identify the target user in your command."
+        action     = self._parse_action(low)
+        duration   = self._parse_duration(low)
+        server_key = self._parse_server(low)
 
         guild_id = servers.get(server_key)
         if not guild_id:
-            known = ", ".join(servers.keys()) or "none"
-            return f"Server '{server_key}' not in config. Known servers: {known}."
+            if len(servers) == 1:
+                guild_id = next(iter(servers.values()))
+                server_key = next(iter(servers.keys()))
+            else:
+                known = ", ".join(servers.keys()) or "none"
+                return f"Server '{server_key}' not in config. Known servers: {known}."
+
+        if any(w in low for w in ("tout le monde", "tout le canal", "tous", "everyone", "monde", "tout monde", "tu le monde", "silence")):
+            return self._mute_all_in_voice(token, guild_id, mute=action != "unmute")
+
+        for alias, uid in sorted(aliases.items(), key=lambda x: len(x[0]), reverse=True):
+            if alias.lower() in low:
+                return self._apply(token, guild_id, uid, alias, action, duration)
+
+        user_query = self._parse_user(low)
+        if not user_query:
+            return "I couldn't identify the target user in your command."
 
         member = self._find_member(token, guild_id, user_query)
         if not member:
@@ -1041,29 +1055,64 @@ class DiscordModHandler:
 
         uid      = member["user"]["id"]
         username = member.get("nick") or member["user"].get("global_name") or member["user"]["username"]
-        return self._apply(token, guild_id, uid, username, action)
+        return self._apply(token, guild_id, uid, username, action, duration)
 
     def _parse_action(self, low: str) -> str:
-        if any(w in low for w in ("unmute", "démute", "remettre le son", "enlève la sourdine")):
+        if any(w in low for w in ("retire la sourdine", "enlève la sourdine", "enleve la sourdine")):
+            return "undeafen"
+        if any(w in low for w in ("unmute", "démute", "remettre le son",
+                                   "retire le mute", "enlève le mute", "enleve le mute")):
             return "unmute"
-        if any(w in low for w in ("mute", "sourdine", "silence", "silencieux")):
+        if "sourdine" in low or any(w in low for w in ("deafen", "assourdir")):
+            return "deafen"
+        if any(w in low for w in ("mute", "silence", "silencieux")):
             return "mute"
-        if any(w in low for w in ("kick", "expulse", "exclure", "vire")):
+        if re.match(r'^to\s+', low) or any(w in low for w in ("timeout", "time out", "sanction", "sanctionner")):
+            return "timeout"
+        if any(w in low for w in ("kick", "kik", "kique", "déconnecte", "deconnecte")):
+            return "voice_kick"
+        if any(w in low for w in ("expulse", "exclure", "vire")):
             return "kick"
         if any(w in low for w in ("ban", "bannir", "banni")):
             return "ban"
-        if any(w in low for w in ("timeout", "sanction", "sanctionner")):
-            return "timeout"
-        if any(w in low for w in ("deafen", "assourdir")):
-            return "deafen"
+        if any(w in low for w in ("dernière vocal", "derniere vocal", "dernière vocale", "derniere vocale", "dernière voc", "derniere voc")):
+            return "move_back"
+        if any(w in low for w in ("move", "moove", "moov", "déplace", "deplace", "amène", "amene")):
+            return "move"
         return "mute"
 
+    @staticmethod
+    def _parse_duration(low: str) -> int:
+        m = re.search(r'(\d+)\s*(secondes?|sec\b|minutes?|min\b|heures?|h\b|jours?|j\b|semaines?)', low, re.I)
+        if not m:
+            return 600
+        val  = int(m.group(1))
+        unit = m.group(2).lower()
+        if unit.startswith("sec"):  return val
+        if unit.startswith("min"):  return val * 60
+        if unit.startswith("h"):    return val * 3600
+        if unit.startswith("j"):    return val * 86400
+        if unit.startswith("sem"):  return val * 604800
+        return 600
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        if seconds < 60:     return f"{seconds}s"
+        if seconds < 3600:   return f"{seconds // 60} min"
+        if seconds < 86400:  return f"{seconds // 3600}h"
+        if seconds < 604800: return f"{seconds // 86400} jour(s)"
+        return f"{seconds // 604800} semaine(s)"
+
     def _parse_user(self, low: str) -> str:
-        # "... pour tag ndqw ..." / "... pseudo ndqw ..."
+        m = re.match(r'^(?:time\s+out|to)\s+(\w+)', low)
+        if m:
+            return m.group(1)
         m = re.search(r'(?:tag|pseudo|username|utilisateur)\s+(\w+)', low)
         if m:
             return m.group(1)
-        # "mute serveur ndqw sur ..."
+        m = re.search(r'(?:retire|enlève|enleve|enlever)\s+(?:la\s+|le\s+)?(?:sourdine|mute)\s+(?:à|a|de|au)\s+(\w+)', low)
+        if m:
+            return m.group(1)
         m = re.search(
             r'(?:mute|unmute|sourdine|kick|expulse|vire|ban|bannir|timeout)\s+'
             r'(?:serveur\s+|vocal\s+)?'
@@ -1071,6 +1120,12 @@ class DiscordModHandler:
             r'(\w+)\s+(?:sur|dans|du|de|depuis)',
             low,
         )
+        if m:
+            return m.group(1)
+        m = re.search(r'(?:derni[eè]re?)\s+voc(?:ale?)?\s+(\w+)', low)
+        if m:
+            return m.group(1)
+        m = re.search(r'(?:kick|sourdine|mute|ban|vire|to|move|moove|moov|déplace|deplace|amène|amene)\s+(?:la\s+personne\s+)?(\w+)(?:\s|$)', low)
         if m:
             return m.group(1)
         return ""
@@ -1116,7 +1171,100 @@ class DiscordModHandler:
                 return m
         return members[0]
 
-    def _apply(self, token: str, guild_id: str, uid: str, name: str, action: str) -> str:
+    def _mute_all_in_voice(self, token: str, guild_id: str, mute: bool = True) -> str:
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path as _Path
+
+        script = _Path(__file__).parent / "get_voice_members.js"
+        try:
+            r = subprocess.run(
+                ["node", str(script), "--machine"],
+                capture_output=True, text=True, timeout=20,
+            )
+            lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+        except Exception as exc:
+            return f"Node.js helper failed: {exc}"
+
+        if not lines or lines[0] == "NOT_IN_VOICE":
+            return "You are not in a voice channel."
+        if lines[0] in ("NO_GUILD", "") or lines[0].startswith("ERROR:"):
+            return f"Voice state error: {lines[0]}"
+
+        member_ids = lines[1:]
+        if not member_ids:
+            return "No one else is in your voice channel."
+
+        h = self._headers(token)
+        done, failed = [], []
+
+        def _mute_one(uid):
+            ok = _requests.patch(
+                f"{self._API}/guilds/{guild_id}/members/{uid}",
+                json={"mute": mute}, headers=h, timeout=5,
+            ).ok
+            (done if ok else failed).append(uid)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_mute_one, member_ids))
+
+        verb = "Muted" if mute else "Unmuted"
+        result = f"{verb} {len(done)} member(s)."
+        if failed:
+            result += f" Failed on {len(failed)}."
+        return result
+
+    def _get_voice_states(self) -> tuple[str, str, dict[str, str]]:
+        """Retourne (my_uid, my_channel_id, {uid: channel_id}) via le script Node."""
+        from pathlib import Path as _Path
+        script = _Path(__file__).parent / "get_voice_members.js"
+        try:
+            r = subprocess.run(
+                ["node", str(script), "--machine", "--all-states"],
+                capture_output=True, text=True, timeout=20,
+            )
+            lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+        except Exception:
+            return "", "", {}
+        if not lines or not lines[0].startswith("SELF:"):
+            return "", "", {}
+        parts     = lines[0][5:].split("|", 1)
+        my_uid    = parts[0]
+        my_ch     = parts[1] if len(parts) > 1 else ""
+        others    = {}
+        for line in lines[1:]:
+            if "|" in line:
+                u, ch = line.split("|", 1)
+                others[u] = ch
+        return my_uid, my_ch, others
+
+    def _move_to_my_voice(self, token: str, guild_id: str, uid: str, name: str) -> str:
+        _, my_channel, others = self._get_voice_states()
+        if not my_channel:
+            return "You are not in a voice channel."
+        prev = others.get(uid)
+        if prev:
+            DiscordModHandler._voice_history[uid] = prev
+        ok = _requests.patch(
+            f"{self._API}/guilds/{guild_id}/members/{uid}",
+            json={"channel_id": my_channel},
+            headers=self._headers(token), timeout=6,
+        ).ok
+        return f"{name} moved to your channel." if ok else f"Failed to move {name}."
+
+    def _move_back(self, token: str, guild_id: str, uid: str, name: str) -> str:
+        prev = DiscordModHandler._voice_history.get(uid)
+        if not prev:
+            return f"No previous channel saved for {name}."
+        ok = _requests.patch(
+            f"{self._API}/guilds/{guild_id}/members/{uid}",
+            json={"channel_id": prev},
+            headers=self._headers(token), timeout=6,
+        ).ok
+        if ok:
+            del DiscordModHandler._voice_history[uid]
+        return f"{name} sent back to previous channel." if ok else f"Failed to move {name} back."
+
+    def _apply(self, token: str, guild_id: str, uid: str, name: str, action: str, duration: int = 600) -> str:
         h = self._headers(token)
         base = f"{self._API}/guilds/{guild_id}/members/{uid}"
 
@@ -1132,18 +1280,33 @@ class DiscordModHandler:
             ok = _requests.patch(base, json={"deaf": True},  headers=h, timeout=6).ok
             return f"{name} server-deafened." if ok else f"Failed to deafen {name}."
 
-        if action == "kick":
+        if action == "undeafen":
+            ok = _requests.patch(base, json={"deaf": False}, headers=h, timeout=6).ok
+            return f"{name} undeafened." if ok else f"Failed to undeafen {name}."
+
+        if action == "move":
+            return self._move_to_my_voice(token, guild_id, uid, name)
+
+        if action == "move_back":
+            return self._move_back(token, guild_id, uid, name)
+
+        if action == "voice_kick":
+            ok = _requests.patch(base, json={"channel_id": None}, headers=h, timeout=6).ok
+            return f"{name} disconnected from voice." if ok else f"Failed to disconnect {name}."
+
+        if action == "kik":
             ok = _requests.delete(base, headers=h, timeout=6).ok
-            return f"{name} kicked." if ok else f"Failed to kick {name}."
+            return f"{name} kicked from server." if ok else f"Failed to kick {name}."
 
         if action == "ban":
             ok = _requests.put(f"{self._API}/guilds/{guild_id}/bans/{uid}", headers=h, timeout=6).ok
             return f"{name} banned." if ok else f"Failed to ban {name}."
 
         if action == "timeout":
-            until = (datetime.datetime.utcnow() + datetime.timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            until = (datetime.datetime.utcnow() + datetime.timedelta(seconds=duration)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            label = self._format_duration(duration)
             ok = _requests.patch(base, json={"communication_disabled_until": until}, headers=h, timeout=6).ok
-            return f"{name} timed out for 10 minutes." if ok else f"Failed to timeout {name}."
+            return f"{name} timed out for {label}." if ok else f"Failed to timeout {name}."
 
         return "Unknown Discord action."
 
@@ -1271,13 +1434,32 @@ class ActionDispatcher:
         }
 
     _CLOSE_VERBS    = ("ferme", "quitte", "kill", "tue")
-    _DISCORD_VERBS  = ("mute", "unmute", "kick", "ban", "timeout", "sourdine", "expulse", "bannir")
-    _DISCORD_HINTS  = ("discord", "serveur", "server", "vocal", "dynasty")
+    _DISCORD_VERBS  = ("mute", "unmute", "kick", "kik", "kique", "ban", "timeout", "time out", "sourdine", "expulse", "bannir",
+                       "silence", "vire", "déconnecte", "move", "moove", "moov", "déplace", "deplace")
+    _DISCORD_HINTS  = ("discord", "serveur", "server", "vocal", "dynasty", "dynast", "d'y", "dynaste", "dynastie",
+                       "tout le monde", "tous", "everyone", "monde", "silence",
+                       "sourdine", "kick", "kik", "kique",
+                       "retire la sourdine", "enlève la sourdine", "retire le mute", "enlève le mute",
+                       "dernière vocal", "derniere vocal", "dernière vocale", "derniere vocale",
+                       "dernière voc", "derniere voc",
+                       "move", "moove", "moov", "déplace", "deplace",
+                       "time out", "timeout")
 
     def dispatch(self, phrase: str, tag: str) -> str:
         low = phrase.lower()
 
-        if any(a in low for a in self._DISCORD_VERBS) and any(h in low for h in self._DISCORD_HINTS):
+        _is_volume = bool(
+            re.search(r'\d+\s*%', low) or re.search(r'(?:à|a)\s+\d+(?:\s|$)', low)
+        )
+        _has_discord_verb = any(a in low for a in self._DISCORD_VERBS)
+        _has_discord_hint = any(h in low for h in self._DISCORD_HINTS)
+        _is_server_ctx    = "sur" in low and not _is_volume and not any(
+            w in low for w in ("son", "volume", "audio", "pc")
+        )
+        _is_to_cmd       = bool(re.match(r'^to\s+\w+', low))
+        _is_move_back    = bool(re.search(r'derni[eè]re?\s+voc', low))
+
+        if _is_to_cmd or _is_move_back or (_has_discord_verb and (_has_discord_hint or _is_server_ctx)):
             tag = "discord_mod"
 
         elif any(v in low for v in self._CLOSE_VERBS) and tag != "arret":
@@ -1286,8 +1468,7 @@ class ActionDispatcher:
         elif any(p in low for p in ("quel jour", "quelle heure", "quelle date", "on est quel", "quel mois", "quelle année")):
             tag = "heure_date"
 
-        elif (re.search(r'\d+\s*%', low) or re.search(r'(?:à|a)\s+\d+(?:\s|$)', low)) and \
-                any(w in low for w in ("volume", "son", "mets", "règle", "met", "fixe")):
+        elif _is_volume and any(w in low for w in ("volume", "son", "mets", "règle", "met", "fixe")):
             tag = "multimedia"
 
         elif "playlist" in low or any(name in low for name in self._handlers["spotify"]._LIBRARY):
