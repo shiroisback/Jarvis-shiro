@@ -1213,41 +1213,37 @@ class DiscordModHandler:
             result += f" Failed on {len(failed)}."
         return result
 
-    def _get_voice_states(self) -> tuple[str, str, dict[str, str]]:
-        """Retourne (my_uid, my_channel_id, {uid: channel_id}) via le script Node."""
+    def _move_to_my_voice(self, token: str, guild_id: str, uid: str, name: str) -> str:
         from pathlib import Path as _Path
         script = _Path(__file__).parent / "get_voice_members.js"
         try:
             r = subprocess.run(
-                ["node", str(script), "--machine", "--all-states"],
+                ["node", str(script), "--machine"],
                 capture_output=True, text=True, timeout=20,
             )
             lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
-        except Exception:
-            return "", "", {}
-        if not lines or not lines[0].startswith("SELF:"):
-            return "", "", {}
-        parts     = lines[0][5:].split("|", 1)
-        my_uid    = parts[0]
-        my_ch     = parts[1] if len(parts) > 1 else ""
-        others    = {}
-        for line in lines[1:]:
-            if "|" in line:
-                u, ch = line.split("|", 1)
-                others[u] = ch
-        return my_uid, my_ch, others
+        except Exception as exc:
+            return f"Node.js helper failed: {exc}"
 
-    def _move_to_my_voice(self, token: str, guild_id: str, uid: str, name: str) -> str:
-        _, my_channel, others = self._get_voice_states()
-        if not my_channel:
+        if not lines or lines[0] in ("NOT_IN_VOICE", "NO_GUILD") or lines[0].startswith("ERROR"):
             return "You are not in a voice channel."
-        prev = others.get(uid)
-        if prev:
-            DiscordModHandler._voice_history[uid] = prev
+
+        my_channel = lines[0]
+        h = self._headers(token)
+
+        try:
+            vs = _requests.get(f"{self._API}/guilds/{guild_id}/voice-states/{uid}", headers=h, timeout=4)
+            if vs.ok:
+                prev = vs.json().get("channel_id")
+                if prev:
+                    DiscordModHandler._voice_history[uid] = prev
+        except Exception:
+            pass
+
         ok = _requests.patch(
             f"{self._API}/guilds/{guild_id}/members/{uid}",
             json={"channel_id": my_channel},
-            headers=self._headers(token), timeout=6,
+            headers=h, timeout=6,
         ).ok
         return f"{name} moved to your channel." if ok else f"Failed to move {name}."
 
