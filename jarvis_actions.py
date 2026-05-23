@@ -34,15 +34,54 @@ class SystemUtils:
         webbrowser.open(url)
 
     @staticmethod
-    def launch(cmd: list[str]) -> None:
-        try:
-            if SystemUtils.is_windows():
-                subprocess.Popen(cmd, shell=False,
-                                 creationflags=subprocess.DETACHED_PROCESS)
-            else:
-                subprocess.Popen(cmd, start_new_session=True)
-        except FileNotFoundError:
-            pass
+    def launch(executables: list[str], win_cmds: list | None = None) -> bool:
+        import shutil as _shutil
+        import glob  as _glob
+        _FL = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+
+        if SystemUtils.is_windows():
+            for exe in executables:
+                found = _shutil.which(exe) or _shutil.which(exe + ".exe")
+                if found:
+                    subprocess.Popen([found], creationflags=_FL)
+                    return True
+
+            for entry in (win_cmds or []):
+                cmd  = [entry] if isinstance(entry, str) else list(entry)
+                path = cmd[0]
+                args = cmd[1:]
+
+                if "*" in path:
+                    matches = sorted(_glob.glob(path), reverse=True)
+                    if not matches:
+                        continue
+                    path = matches[0]
+
+                if os.path.isfile(path):
+                    subprocess.Popen([path] + args, creationflags=_FL)
+                    return True
+
+            if executables:
+                try:
+                    subprocess.Popen(
+                        f'start "" "{executables[0]}"',
+                        shell=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    return True
+                except Exception:
+                    pass
+
+        else:
+            for exe in executables:
+                if _shutil.which(exe):
+                    try:
+                        subprocess.Popen([exe], start_new_session=True)
+                        return True
+                    except Exception:
+                        continue
+
+        return False
 
     @staticmethod
     def extract_after(phrase: str, *markers: str) -> str:
@@ -60,28 +99,28 @@ class SalutationHandler:
     _AFTERNOON_LIMIT = 18
 
     _REPLIES = [
-        "{greeting}. Tout est en ordre, j'attends vos instructions.",
-        "{greeting}. Qu'est-ce que je peux faire pour vous ?",
-        "{greeting}. Je vous écoute.",
-        "{greeting}. Prêt.",
+        "{greeting}. All systems online, awaiting your orders.",
+        "{greeting}. What can I do for you?",
+        "{greeting}. I'm listening.",
+        "{greeting}. Ready.",
     ]
 
     def handle(self, phrase: str) -> str:
         hour = datetime.datetime.now().hour
         if hour < self._MORNING_LIMIT:
-            greeting = "Bonjour"
+            greeting = "Good morning"
         elif hour < self._AFTERNOON_LIMIT:
-            greeting = "Bonne après-midi"
+            greeting = "Good afternoon"
         else:
-            greeting = "Bonsoir"
+            greeting = "Good evening"
         return random.choice(self._REPLIES).format(greeting=greeting)
 
 
 class DateTimeHandler:
-    _DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+    _DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     _MONTHS = [
-        "janvier", "février", "mars", "avril", "mai", "juin",
-        "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
     ]
 
     def handle(self, phrase: str) -> str:
@@ -94,27 +133,27 @@ class DateTimeHandler:
         if any(w in low for w in ("date", "jour", "mois", "semaine", "année", "annee")):
             day_name = self._DAYS[now.weekday()]
             month_name = self._MONTHS[now.month - 1]
-            return f"Nous sommes {day_name} {now.day} {month_name} {now.year}."
+            return f"Today is {day_name}, {month_name} {now.day} {now.year}."
 
-        return f"Il est {now.strftime('%H:%M:%S')}."
+        return f"It is {now.strftime('%H:%M:%S')}."
 
     def _handle_timer(self, low: str) -> str:
         match = re.search(r"(\d+)\s*(min|minute|sec|seconde|heure|h\b)", low)
         if not match:
-            return "Precisez la durée, par exemple : rappelle moi dans 10 minutes."
+            return "Please specify a duration, for example: remind me in 10 minutes."
         val = int(match.group(1))
         unit = match.group(2)
         if unit.startswith("sec"):
             secs = val
-            label = "seconde(s)"
+            label = "second" + ("s" if val > 1 else "")
         elif unit.startswith("h"):
             secs = val * 3600
-            label = "heure(s)"
+            label = "hour" + ("s" if val > 1 else "")
         else:
             secs = val * 60
-            label = "minute(s)"
+            label = "minute" + ("s" if val > 1 else "")
         self._start_timer(secs)
-        return f"Timer de {val} {label} lancé."
+        return f"Timer set for {val} {label}."
 
     @staticmethod
     def _start_timer(seconds: int) -> None:
@@ -189,78 +228,272 @@ class SystemInfoHandler:
 
 
 class ApplicationHandler:
-    _KNOWN_APPS: dict[str, list[str]] = {
-        "chrome":       ["chrome", "google-chrome"],
-        "firefox":      ["firefox"],
-        "edge":         ["msedge", "microsoft-edge"],
-        "notepad":      ["notepad", "gedit"],
-        "vscode":       ["code"],
-        "spotify":      ["spotify"],
-        "discord":      ["discord"],
-        "teams":        ["teams"],
-        "calculatrice": ["calc", "gnome-calculator"],
-        "explorateur":  ["explorer", "nautilus"],
-        "taskmgr":      ["taskmgr", "gnome-system-monitor"],
+    _LAPPDATA  = os.environ.get("LOCALAPPDATA", "")
+    _APPDATA   = os.environ.get("APPDATA", "")
+    _PF        = os.environ.get("PROGRAMFILES",       r"C:\Program Files")
+    _PF86      = os.environ.get("PROGRAMFILES(X86)",  r"C:\Program Files (x86)")
+    _STARTMENU_DIRS = [
+        os.path.join(os.environ.get("APPDATA", ""),
+                     r"Microsoft\Windows\Start Menu\Programs"),
+        r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs",
+    ]
+
+    _dynamic_map: dict[str, str] = {}
+    _dynamic_loaded = False
+
+    @classmethod
+    def _load_dynamic_apps(cls) -> None:
+        if cls._dynamic_loaded:
+            return
+        cls._dynamic_loaded = True
+        ps = r"""
+$sh = New-Object -ComObject WScript.Shell
+$dirs = @(
+  $env:APPDATA  + '\Microsoft\Windows\Start Menu\Programs',
+  'C:\ProgramData\Microsoft\Windows\Start Menu\Programs',
+  $env:USERPROFILE + '\Desktop',
+  $env:LOCALAPPDATA + '\Programs'
+)
+$out = @()
+foreach ($d in $dirs) {
+  if (Test-Path $d) {
+    Get-ChildItem $d -Recurse -Filter '*.lnk' -EA 0 | ForEach-Object {
+      try {
+        $t = $sh.CreateShortcut($_.FullName).TargetPath
+        if ($t -like '*.exe' -and (Test-Path $t)) {
+          $out += ($_.BaseName + '|' + $t)
+        }
+      } catch {}
+    }
+    Get-ChildItem $d -Recurse -Filter '*.exe' -EA 0 | ForEach-Object {
+      $out += ($_.BaseName + '|' + $_.FullName)
+    }
+  }
+}
+$out | Sort-Object -Unique
+"""
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=20,
+            )
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if "|" in line:
+                    name, path = line.split("|", 1)
+                    cls._dynamic_map[name.lower()] = path.strip()
+        except Exception as exc:
+            print(f"[Apps] Découverte Start Menu échouée: {exc}")
+
+    _KNOWN_APPS: dict[str, dict] = {
+        "chrome": {
+            "exes": ["chrome", "google-chrome", "chromium"],
+            "win_cmds": [
+                rf"{_PF}\Google\Chrome\Application\chrome.exe",
+                rf"{_PF86}\Google\Chrome\Application\chrome.exe",
+            ],
+        },
+        "firefox": {
+            "exes": ["firefox"],
+            "win_cmds": [
+                rf"{_PF}\Mozilla Firefox\firefox.exe",
+                rf"{_PF86}\Mozilla Firefox\firefox.exe",
+            ],
+        },
+        "edge": {
+            "exes": ["msedge"],
+            "win_cmds": [
+                rf"{_PF86}\Microsoft\Edge\Application\msedge.exe",
+                rf"{_PF}\Microsoft\Edge\Application\msedge.exe",
+            ],
+        },
+        "notepad": {"exes": ["notepad", "gedit"], "win_cmds": []},
+        "vscode":  {
+            "exes": ["code"],
+            "win_cmds": [rf"{_LAPPDATA}\Programs\Microsoft VS Code\Code.exe"],
+        },
+        "spotify": {
+            "exes": ["spotify"],
+            "win_cmds": [
+                rf"{_APPDATA}\Spotify\Spotify.exe",
+                rf"{_LAPPDATA}\Microsoft\WindowsApps\Spotify.exe",
+            ],
+        },
+        "discord": {
+            "exes": ["discord", "discorde"],
+            "win_cmds": [
+                rf"{_LAPPDATA}\Discord\app-*\Discord.exe",
+                [rf"{_LAPPDATA}\Discord\Update.exe",
+                 "--processStart", "Discord.exe"],
+            ],
+        },
+        "discord canary": {
+            "exes": ["discordcanary", "canary"],
+            "win_cmds": [
+                rf"{_LAPPDATA}\DiscordCanary\app-*\DiscordCanary.exe",
+                [rf"{_LAPPDATA}\DiscordCanary\Update.exe",
+                 "--processStart", "DiscordCanary.exe"],
+            ],
+        },
+        "teams": {
+            "exes": ["teams"],
+            "win_cmds": [
+                rf"{_LAPPDATA}\Microsoft\Teams\current\Teams.exe",
+                rf"{_PF}\Microsoft\Teams\current\Teams.exe",
+            ],
+        },
+        "calculatrice": {"exes": ["calc", "gnome-calculator"], "win_cmds": []},
+        "explorateur":  {"exes": ["explorer", "nautilus"],     "win_cmds": []},
+        "taskmgr":      {"exes": ["taskmgr"],                  "win_cmds": []},
+        "obs": {
+            "exes": ["obs64", "obs"],
+            "win_cmds": [rf"{_PF}\obs-studio\bin\64bit\obs64.exe"],
+        },
+        "steam": {
+            "exes": ["steam"],
+            "win_cmds": [
+                rf"{_PF86}\Steam\steam.exe",
+                rf"{_PF}\Steam\steam.exe",
+            ],
+        },
+        "vlc": {
+            "exes": ["vlc"],
+            "win_cmds": [
+                rf"{_PF}\VideoLAN\VLC\vlc.exe",
+                rf"{_PF86}\VideoLAN\VLC\vlc.exe",
+            ],
+        },
+        "word":  {"exes": ["winword"], "win_cmds": []},
+        "excel": {"exes": ["excel"],   "win_cmds": []},
+    }
+
+    _PROC_NAMES: dict[str, str] = {
+        "chrome": "chrome.exe",          "firefox": "firefox.exe",       "edge": "msedge.exe",
+        "notepad": "notepad.exe",        "vscode": "Code.exe",           "spotify": "Spotify.exe",
+        "discord": "Discord.exe",        "discord canary": "DiscordCanary.exe",
+        "teams": "Teams.exe",            "vlc": "vlc.exe",
+        "steam": "steam.exe",            "obs": "obs64.exe",
     }
 
     def handle(self, phrase: str) -> str:
+        self._load_dynamic_apps()
         low = phrase.lower()
         closing = any(w in low for w in ("ferme", "quitte", "kill", "arrête", "tue"))
 
-        app_name, cmds = self._find_app(low)
-        if not cmds:
-            m = re.search(r"(?:lance|ouvre|démarre|ferme|quitte|kill)\s+(\w+)", low)
-            if m:
-                app_name = m.group(1)
-                cmds = [m.group(1)]
-            else:
-                return "Aucune application reconnue dans cette commande."
+        app_name, cfg = self._find_app(low)
+
+        if cfg is None:
+            dyn_name, dyn_path = self._find_dynamic(low)
+            if dyn_path:
+                if closing:
+                    exe = os.path.basename(dyn_path)
+                    subprocess.run(f"taskkill /IM {exe} /F",
+                                   shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return f"Closing {dyn_name}."
+                _FL = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+                try:
+                    subprocess.Popen([dyn_path], creationflags=_FL)
+                    return f"Launching {dyn_name}."
+                except Exception as exc:
+                    return f"Unable to launch {dyn_name}: {exc}"
+
+            m = re.search(r"(?:lance|ouvre|démarre|ferme|quitte|kill|arrête)\s+(\w+)", low)
+            if not m:
+                return "Application not recognized."
+            app_name = m.group(1)
+            if closing:
+                subprocess.run(f"taskkill /IM {app_name}.exe /F",
+                               shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return f"Closing {app_name}."
+            ok = SystemUtils.launch([app_name], [])
+            return f"Launching {app_name}." if ok else f"Unable to launch {app_name}."
 
         if closing:
-            if SystemUtils.is_windows():
-                os.system(f"taskkill /IM {cmds[0]}.exe /F >nul 2>&1")
-            else:
-                os.system(f"pkill -f {cmds[0]} 2>/dev/null")
-            return f"{app_name.capitalize()} fermé."
+            proc = self._PROC_NAMES.get(app_name,
+                   (cfg["exes"][0] + ".exe") if cfg["exes"] else "")
+            if SystemUtils.is_windows() and proc:
+                subprocess.run(f"taskkill /IM {proc} /F",
+                               shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif not SystemUtils.is_windows() and cfg["exes"]:
+                os.system(f"pkill -f {cfg['exes'][0]} 2>/dev/null")
+            return f"Closing {app_name}."
 
-        for cmd in cmds:
-            try:
-                SystemUtils.launch([cmd])
-                return f"{app_name.capitalize()} lancé."
-            except Exception:
-                continue
-        return f"Impossible de trouver {app_name} dans le PATH."
+        ok = SystemUtils.launch(cfg["exes"], cfg.get("win_cmds", []))
+        return f"Launching {app_name}." if ok else f"Unable to launch {app_name}."
 
-    def _find_app(self, low: str) -> tuple[str, list[str]]:
-        for key, cmds in self._KNOWN_APPS.items():
-            if key in low or any(c in low for c in cmds):
-                return key, cmds
-        return "", []
+    def _find_app(self, low: str) -> tuple[str, dict | None]:
+        for key, cfg in self._KNOWN_APPS.items():
+            aliases = [key] + cfg.get("exes", [])
+            if any(a in low for a in aliases):
+                return key, cfg
+        return "", None
+
+    def _find_dynamic(self, low: str) -> tuple[str, str]:
+        words = re.findall(r"[a-zàâäéèêëîïôöùûüç]+", low)
+        best_name = ""
+        best_path = ""
+        best_score = 0
+        for app_name, path in self._dynamic_map.items():
+            app_words = re.findall(r"[a-z]+", app_name.lower())
+            score = sum(1 for w in words if any(w in aw or aw in w for aw in app_words))
+            if score > best_score:
+                best_score = score
+                best_name = app_name
+                best_path = path
+        if best_score > 0 and any(len(w) > 2 for w in words if any(w in an or an in w
+                                  for an in re.findall(r"[a-z]+", best_name.lower()))):
+            return best_name, best_path
+        return "", ""
 
 
 class MultimediaHandler:
+
     def handle(self, phrase: str) -> str:
         low = phrase.lower()
+
+        m = re.search(r'(\d{1,3})\s*%', low)
+        if m and any(w in low for w in ("volume", "son", "mets", "règle", "fixe", "met")):
+            pct = max(0, min(100, int(m.group(1))))
+            app = "spotify.exe" if "spotify" in low else None
+            return self._set_volume(pct, app)
 
         if SystemUtils.is_windows():
             return self._handle_windows(low)
         return self._handle_linux(low)
+
+    @staticmethod
+    def _set_volume(percent: int, app: str | None = None) -> str:
+        val = f"{percent / 100:.2f}"
+        if SystemUtils.is_windows():
+            if app:
+                subprocess.run(["nircmd", "setappvolume", app, val],
+                               capture_output=True, timeout=5)
+                label = app.replace(".exe", "").capitalize()
+            else:
+                sys_val = str(int(65535 * percent / 100))
+                subprocess.run(["nircmd", "setsysvolume", sys_val],
+                               capture_output=True, timeout=5)
+                label = "Système"
+        else:
+            os.system(f"pactl set-sink-volume @DEFAULT_SINK@ {percent}%")
+            label = "Système"
+        return f"Setting {label} volume to {percent} percent."
 
     def _handle_windows(self, low: str) -> str:
         shell = "powershell -c \"$o = New-Object -ComObject WScript.Shell; $o.SendKeys([char]{key})\""
 
         if any(w in low for w in ("monte", "augmente", "plus")):
             os.system(shell.format(key=175))
-            return "Volume augmenté."
+            return "Increasing volume."
         if any(w in low for w in ("baisse", "diminue", "moins")):
             os.system(shell.format(key=174))
-            return "Volume diminué."
+            return "Decreasing volume."
         if any(w in low for w in ("mute", "sourdine", "coupe")):
             os.system(shell.format(key=173))
-            return "Son coupé."
+            return "Audio muted."
         if any(w in low for w in ("unmute", "remets", "rétablis")):
             os.system(shell.format(key=173))
-            return "Son rétabli."
+            return "Audio restored."
 
         media_keys = {"pause": 0xB3, "play": 0xB3, "suivant": 0xB0, "précédent": 0xB1}
         for word, vk in media_keys.items():
@@ -322,12 +555,12 @@ class WebSearchHandler:
             url = (f"https://www.youtube.com/results?search_query={quote_plus(query)}"
                    if query else "https://www.youtube.com")
             SystemUtils.open_url(url)
-            return f"Recherche YouTube : {query}"
+            return f"Searching YouTube for {query}."
 
         if "wikipedia" in low:
             query = SystemUtils.extract_after(phrase, "wikipedia", "cherche sur wikipedia")
             SystemUtils.open_url(f"https://fr.wikipedia.org/wiki/Special:Search/{quote_plus(query)}")
-            return f"Recherche Wikipedia : {query}"
+            return f"Looking up {query} on Wikipedia."
 
         query = SystemUtils.extract_after(
             phrase,
@@ -337,7 +570,7 @@ class WebSearchHandler:
         if not query:
             query = phrase
         SystemUtils.open_url(f"https://www.google.com/search?q={quote_plus(query)}")
-        return f"Recherche Google : {query}"
+        return f"Searching Google for {query}."
 
     def _local_search(self, phrase: str) -> str:
         low = phrase.lower()
@@ -583,17 +816,17 @@ class NetworkHandler:
 
 class JokeHandler:
     _JOKES = [
-        "Pourquoi les plongeurs plongent-ils toujours en arriere ?\nParce que sinon ils tomberaient dans le bateau.",
-        "Un homme entre dans une bibliotheque et demande : avez-vous des livres sur la paranoia ?\nLe bibliothecaire chuchote : ils sont juste derriere vous.",
-        "Je connais une blague sur le papier. Elle est dechirante.",
-        "Pourquoi Einstein etait-il mauvais en societe ? Parce qu'il ne pensait qu'a lui. E=mc2.",
-        "Un developpeur rentre chez lui. Sa femme lui dit : va faire les courses, achete une baguette, et si tu vois des oeufs prends-en douze.\nIl revient avec douze baguettes.",
+        "Why do scuba divers always fall backwards off the boat? Because if they fell forwards, they'd still be in the boat.",
+        "A man walks into a library and asks for books about paranoia. The librarian whispers: they're right behind you.",
+        "I know a joke about paper. It's tearable.",
+        "Why was Einstein bad at socializing? He only thought about himself. E equals M C squared.",
+        "A developer goes home. His wife says: go shopping, get a baguette, and if they have eggs, get a dozen. He comes back with twelve baguettes.",
     ]
 
     _ABOUT = [
-        "Je suis Jarvis, l'assistant de Shiro. Developpement local, zero cloud.",
-        "Shiro m'a cree. Je tourne entierement sur cette machine, sans aucune connexion externe.",
-        "Je suis un assistant en ligne de commande. Pas d'interface graphique, pas de serveur tiers.",
+        "I am Jarvis, Shiro's personal assistant. Local processing, zero cloud.",
+        "Shiro built me. I run entirely on this machine with no external connections.",
+        "I am a voice assistant. No third-party servers, no telemetry.",
     ]
 
     def handle(self, phrase: str) -> str:
@@ -684,7 +917,7 @@ class CalculatorHandler:
                 result = round(result, 6)
             return f"{phrase.strip()} = {result}"
         except Exception:
-            return f"Impossible de calculer : {expr.strip()}"
+            return f"I couldn't compute: {expr.strip()}"
 
 
 class ShutdownHandler:
@@ -696,34 +929,34 @@ class ShutdownHandler:
         if any(w in low for w in ("éteins le pc", "shutdown", "extinction")):
             cmd = "shutdown /s /t 30" if SystemUtils.is_windows() else "shutdown -h +1"
             os.system(cmd)
-            return "Extinction dans 30 secondes."
+            return "Shutting down in 30 seconds."
 
         if any(w in low for w in ("redémarre", "reboot")):
             cmd = "shutdown /r /t 30" if SystemUtils.is_windows() else "shutdown -r +1"
             os.system(cmd)
-            return "Redémarrage dans 30 secondes."
+            return "Rebooting in 30 seconds."
 
         if any(w in low for w in ("veille", "hibernation", "sleep")):
             if SystemUtils.is_windows():
                 os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
             else:
                 os.system("systemctl suspend")
-            return "Mise en veille."
+            return "Going to sleep."
 
         if any(w in low for w in ("verrouille", "verrou", "lock")):
             if SystemUtils.is_windows():
                 os.system("rundll32.exe user32.dll,LockWorkStation")
             else:
                 os.system("loginctl lock-session")
-            return "Ecran verrouille."
+            return "Locking the screen."
 
         return self.EXIT_SIGNAL
 
 class PresentationHandler:
     _REPLIES = [
-        "Enchanté, {name}. Je suis là pour vous aider.",
-        "Ravi de faire votre connaissance, {name}.",
-        "Bonjour {name}. Je retiens votre nom.",
+        "Nice to meet you, {name}. I'm at your service.",
+        "Noted, {name}. How can I help?",
+        "Hello {name}. I'll remember that.",
     ]
 
     def handle(self, phrase: str) -> str:
@@ -734,25 +967,107 @@ class PresentationHandler:
         )
         if not name:
             return random.choice([
-                "Enchanté. Je suis Jarvis.",
-                "Ravi de faire votre connaissance.",
+                "I am Jarvis. Nice to meet you.",
+                "Pleased to make your acquaintance.",
             ])
         return random.choice(self._REPLIES).format(name=name)
 
 class UnknownHandler:
     _REPLIES = [
-        "Je n'ai pas compris. Reformulez.",
-        "Commande non reconnue.",
-        "Je n'ai pas saisi. Essayez autrement.",
+        "I didn't understand. Please rephrase.",
+        "Command not recognized.",
+        "I didn't catch that. Try again.",
     ]
 
     def handle(self, phrase: str) -> str:
         return random.choice(self._REPLIES)
+    
+class SpotifyHandler:
+    _LIBRARY: dict[str, dict] = {
+        "dev":           {"uri": "spotify:playlist:0GXuC6xmnvHwGLVnkVY26g"},
+        "da":            {"uri": "spotify:playlist:0GXuC6xmnvHwGLVnkVY26g"},
+        "dav":           {"uri": "spotify:playlist:0GXuC6xmnvHwGLVnkVY26g"},
+        "dave":          {"uri": "spotify:playlist:0GXuC6xmnvHwGLVnkVY26g"},
+        "hype":          {"uri": "spotify:playlist:6t3zJDSMXOgZjs25lVcpZm"},
+        "hyp":           {"uri": "spotify:playlist:6t3zJDSMXOgZjs25lVcpZm"},
+        "hip":           {"uri": "spotify:playlist:6t3zJDSMXOgZjs25lVcpZm"},
+        "pnl":           {"uri": "spotify:artist:3NH8t45zOTqzlZgBvZRjvB",  "y": 0.50},
+        "jul":           {"uri": "spotify:album:2GLuHlc49dJKY8yzxUZb8p",   "y": 0.41},
+        "jewel":         {"uri": "spotify:album:2GLuHlc49dJKY8yzxUZb8p",   "y": 0.41},
+        "moha la squal": {"uri": "spotify:artist:4vtz0m60CCrcsQmqDunDIR",  "y": 0.50},
+        "moha":          {"uri": "spotify:artist:4vtz0m60CCrcsQmqDunDIR",  "y": 0.50},
+    }
 
+    PLAY_BTN_X = 0.08
+    PLAY_BTN_Y = 0.41
 
-                                                                             
-            
-                                                                             
+    _TYPE_LABEL = {"playlist": "playlist", "artist": "artiste", "album": "album"}
+
+    def handle(self, phrase: str) -> str:
+        low = phrase.lower()
+
+        if any(w in low for w in ("pause", "stop", "arrête", "suspends")):
+            import ctypes
+            VK = 0xB3  
+            ctypes.windll.user32.keybd_event(VK, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK, 0, 2, 0)
+            return "Pausing Spotify."
+
+        entry = None
+        match_name = ""
+        for name, data in sorted(self._LIBRARY.items(), key=lambda x: len(x[0]), reverse=True):
+            if name in low:
+                match_name = name
+                entry = data
+                break
+
+        if entry is None:
+            return "I couldn't find that in your Spotify library."
+
+        uri   = entry["uri"]
+        btn_x = entry.get("x", self.PLAY_BTN_X)
+        btn_y = entry.get("y", self.PLAY_BTN_Y)
+
+        webbrowser.open(uri)
+        threading.Thread(target=self._autoplay, args=(btn_x, btn_y), daemon=True).start()
+        return f"Launching {match_name} on Spotify."
+
+    @staticmethod
+    def _autoplay(btn_x: float, btn_y: float) -> None:
+        time.sleep(2.0)
+        ps = f"""
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class W32 {{
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, int e);
+    [Serializable, System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    public struct RECT {{ public int Left, Top, Right, Bottom; }}
+}}
+'@
+$p = Get-Process Spotify -EA 0 | Where-Object {{ $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
+if (!$p) {{ exit }}
+$hwnd = [IntPtr]$p.MainWindowHandle
+[W32]::ShowWindow($hwnd, 3) | Out-Null
+[W32]::SetForegroundWindow($hwnd) | Out-Null
+Start-Sleep -Milliseconds 800
+$r = New-Object W32+RECT
+[W32]::GetWindowRect($hwnd, [ref]$r) | Out-Null
+$w = $r.Right - $r.Left
+$h = $r.Bottom - $r.Top
+$cx = $r.Left + [int]($w * {btn_x})
+$cy = $r.Top  + [int]($h * {btn_y})
+[W32]::SetCursorPos($cx, $cy) | Out-Null
+Start-Sleep -Milliseconds 150
+[W32]::mouse_event(2, 0, 0, 0, 0) | Out-Null
+[W32]::mouse_event(4, 0, 0, 0, 0) | Out-Null
+"""
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
+
 
 class ActionDispatcher:
                                                              
@@ -767,6 +1082,7 @@ class ActionDispatcher:
             "recherche_web": WebSearchHandler(),
             "fichiers":      FileHandler(),
             "reseau":        NetworkHandler(),
+            "spotify":       SpotifyHandler(),
             "blague":        JokeHandler(),
             "meteo":         WeatherHandler(),
             "calcul":        CalculatorHandler(),
@@ -776,6 +1092,14 @@ class ActionDispatcher:
         }
 
     def dispatch(self, phrase: str, tag: str) -> str:
+        low = phrase.lower()
+
+        if re.search(r'\d+\s*%', low) and any(w in low for w in ("volume", "son", "mets", "règle", "met", "fixe")):
+            tag = "multimedia"
+
+        elif "playlist" in low or any(name in low for name in self._handlers["spotify"]._LIBRARY):
+            tag = "spotify"
+
         handler = self._handlers.get(tag, self._handlers["inconnu"])
         try:
             return handler.handle(phrase)

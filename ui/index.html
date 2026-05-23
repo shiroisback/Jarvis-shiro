@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div id="win-btns" onmousedown="event.stopPropagation()">
+    <button class="wbtn" id="btn-fs"    onclick="pywebview.api.toggle_fullscreen()">⛶</button>
+    <button class="wbtn" id="btn-min"   onclick="pywebview.api.minimize()">─</button>
+    <button class="wbtn" id="btn-close" onclick="pywebview.api.close()">✕</button>
+</div>
+
+<div id="reactor-wrap">
+    <div class="arc_reactor" id="arc-reactor">
+        <div class="case_container">
+            <div class="e7">
+                <div class="semi_arc_3 e5_1">
+                    <div class="semi_arc_3 e5_2">
+                        <div class="semi_arc_3 e5_3">
+                            <div class="semi_arc_3 e5_4"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="core2"></div>
+            </div>
+            <ul class="marks" id="marks-ring"></ul>
+        </div>
+    </div>
+</div>
+
+<script src="./main.js"></script>
+</body>
+</html>

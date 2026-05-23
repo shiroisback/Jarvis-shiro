@@ -103,7 +103,6 @@ def _cli() -> None:
         print(f"{tag:<20} {conf:>6.1%}  ({ms:.1f} ms)")
         return
 
-    print("Interactive mode — type a command (quit to exit)\n")
     while True:
         try:
             phrase = input("You > ").strip()
